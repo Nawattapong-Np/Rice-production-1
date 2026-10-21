@@ -1,21 +1,92 @@
-MIT License
+"""ล้างข้อมูล Rice production
 
-Copyright (c) 2026 SasitornAe
+อ่าน   : data/raw/Rice production.csv
+เขียน  : data/processed/rice_clean.csv
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+วิธีรัน (จากโฟลเดอร์โครงงาน):  python code/01_clean_data.py
+"""
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+from pathlib import Path
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+RAW_PATH = ROOT / "data" / "raw" / "Rice production.csv"
+OUT_PATH = ROOT / "data" / "processed" / "rice_clean.csv"
+
+# ชื่อพื้นที่ที่อักขระเพี้ยน (แสดงเป็น "?") -> ชื่อที่ถูกต้อง
+AREA_FIXES = {
+    "C?te d'Ivoire": "Côte d'Ivoire",
+    "R?union": "Réunion",
+    "T?rkiye": "Türkiye",
+}
+
+# หน่วยทางประวัติศาสตร์ที่ไม่มีแล้ว
+HISTORICAL_AREAS = {"USSR", "Yugoslav SFR", "Sudan (former)"}
+# China = ผลรวมของ 3 ส่วนนี้ (+ Macao ถ้ามี) จึงอาจนับซ้ำได้
+CHINA_AGGREGATE = {"China"}
+CHINA_COMPONENTS = {
+    "China, mainland",
+    "China, Hong Kong SAR",
+    "China, Taiwan Province of",
+}
+
+RENAME = {
+    "Area": "area",
+    "Year": "year",
+    "Unit": "unit",
+    "Value": "value_tonnes",
+    "Flag": "flag",
+    "Flag Description": "flag_description",
+}
+
+
+def area_type(area: str) -> str:
+    if area in HISTORICAL_AREAS:
+        return "historical"
+    if area in CHINA_AGGREGATE:
+        return "aggregate"
+    if area in CHINA_COMPONENTS:
+        return "component"
+    return "country"
+
+
+def main() -> None:
+    df = pd.read_csv(RAW_PATH, encoding="utf-8")
+    n_raw = len(df)
+
+    df = df.rename(columns=RENAME)
+
+    # ตัดช่องว่างหัวท้ายและแก้ชื่อพื้นที่ที่เพี้ยน
+    for col in ["area", "unit", "flag", "flag_description"]:
+        df[col] = df[col].astype("string").str.strip()
+    df["area"] = df["area"].replace(AREA_FIXES)
+
+    # ลบแถวซ้ำของ (area, year) ถ้ามี (ไฟล์ปัจจุบันไม่มี)
+    df = df.drop_duplicates(subset=["area", "year"], keep="first")
+
+    # Flag = M คือ "ข้อมูลไม่มี/ไม่เกี่ยวข้อง" แต่ไฟล์ดิบบันทึกเป็น 0
+    # เปลี่ยนเป็นค่าว่างเพื่อไม่ให้ไปดึงค่าเฉลี่ยและแนวโน้มให้ต่ำเกินจริง
+    is_missing = df["flag"] == "M"
+    df["value_tonnes"] = df["value_tonnes"].astype(float)
+    df.loc[is_missing, "value_tonnes"] = np.nan
+
+    # ตัดแถวที่ค่าติดลบ (ไม่ควรเกิดขึ้น)
+    df = df[~(df["value_tonnes"] < 0)]
+
+    df["area_type"] = df["area"].map(area_type)
+
+    df = df.sort_values(["area", "year"]).reset_index(drop=True)
+
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUT_PATH, index=False, encoding="utf-8")
+
+    print(f"แถวดิบ: {n_raw:,} -> แถวที่ล้างแล้ว: {len(df):,}")
+    print(f"คอลัมน์: {len(df.columns)} {list(df.columns)}")
+    print(f"ค่าว่างใน value_tonnes: {df['value_tonnes'].isna().sum():,}")
+    print(f"บันทึกที่: {OUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
